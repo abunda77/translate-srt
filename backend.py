@@ -3,8 +3,17 @@ import time
 import requests
 import srt
 from dotenv import load_dotenv
+from PIL import Image
+import pytesseract
 
 load_dotenv()
+
+# Setup Tesseract OCR path (especially for Windows)
+try:
+    from tesseract_config import setup_tesseract
+    setup_tesseract()
+except ImportError:
+    pass  # tesseract_config.py not found, assume tesseract is in PATH
 
 class DeepLTranslator:
     def __init__(self, api_key=None):
@@ -136,4 +145,97 @@ class DeepLTranslator:
         with open(output_path, "wb") as f:
             for chunk in download_response.iter_content(chunk_size=8192):
                 f.write(chunk)
+
+    def extract_text_from_image(self, image_path_or_pil, lang='eng+ind'):
+        """
+        Extracts text from an image using Tesseract OCR.
+        
+        Args:
+            image_path_or_pil: Either a file path (str) or a PIL Image object
+            lang: Language(s) for OCR. Default is 'eng+ind' (English + Indonesian)
+                  Common options: 'eng', 'ind', 'eng+ind', 'jpn', 'chi_sim', etc.
+        
+        Returns:
+            str: Extracted text from the image
+        """
+        import tempfile
+        temp_file = None
+        
+        try:
+            # If it's a string path, open the image
+            if isinstance(image_path_or_pil, str):
+                print(f"[DEBUG] Opening image from path: {image_path_or_pil}")
+                image = Image.open(image_path_or_pil)
+            else:
+                # Assume it's already a PIL Image
+                print(f"[DEBUG] Using PIL Image object")
+                image = image_path_or_pil
+            
+            print(f"[DEBUG] Original image mode: {image.mode}, size: {image.size}")
+            
+            # Convert image to RGB if it's not already
+            # This fixes issues with RGBA, P, L, and other modes from clipboard
+            if image.mode not in ('RGB', 'L'):
+                print(f"[DEBUG] Converting image from {image.mode} to RGB...")
+                # Convert RGBA to RGB with white background
+                if image.mode == 'RGBA':
+                    background = Image.new('RGB', image.size, (255, 255, 255))
+                    background.paste(image, mask=image.split()[3])  # Use alpha channel as mask
+                    image = background
+                    print(f"[DEBUG] RGBA converted to RGB with white background")
+                else:
+                    # Convert other modes to RGB
+                    image = image.convert('RGB')
+                    print(f"[DEBUG] Converted to RGB using convert() method")
+            else:
+                print(f"[DEBUG] Image already in compatible mode: {image.mode}")
+            
+            print(f"[DEBUG] Final image mode before OCR: {image.mode}")
+            
+            # Try direct OCR first
+            try:
+                print(f"[DEBUG] Attempting direct OCR with language: {lang}")
+                text = pytesseract.image_to_string(image, lang=lang)
+                print(f"[DEBUG] Direct OCR completed successfully, extracted {len(text)} characters")
+                return text.strip()
+            except Exception as direct_error:
+                print(f"[DEBUG] Direct OCR failed: {str(direct_error)}")
+                print(f"[DEBUG] Trying alternative method: saving to temp file first...")
+                
+                # Fallback: Save to temporary file and OCR from file
+                temp_file = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+                temp_path = temp_file.name
+                temp_file.close()
+                
+                print(f"[DEBUG] Saving image to temp file: {temp_path}")
+                image.save(temp_path, 'PNG')
+                
+                print(f"[DEBUG] Attempting OCR from temp file...")
+                text = pytesseract.image_to_string(temp_path, lang=lang)
+                print(f"[DEBUG] Temp file OCR completed successfully, extracted {len(text)} characters")
+                
+                # Clean up temp file
+                try:
+                    os.unlink(temp_path)
+                    print(f"[DEBUG] Temp file cleaned up")
+                except:
+                    pass
+                
+                return text.strip()
+                
+        except pytesseract.TesseractNotFoundError:
+            raise Exception("Tesseract OCR not found! Please install Tesseract OCR first.\n\nDownload from: https://github.com/UB-Mannheim/tesseract/wiki")
+        except Exception as e:
+            print(f"[DEBUG] OCR Error: {type(e).__name__}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise Exception(f"OCR failed: {str(e)}")
+        finally:
+            # Clean up temp file if it exists
+            if temp_file and os.path.exists(temp_file.name):
+                try:
+                    os.unlink(temp_file.name)
+                except:
+                    pass
+
 

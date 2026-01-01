@@ -2,3 +2,6 @@ customtkinter
 requests
 python-dotenv
 srt
+pytesseract
+Pillow
+pyperclip
