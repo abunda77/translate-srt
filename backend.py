@@ -15,6 +15,9 @@ try:
 except ImportError:
     pass  # tesseract_config.py not found, assume tesseract is in PATH
 
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 class DeepLTranslator:
     def __init__(self, api_key=None):
         self.api_key = api_key or os.getenv("DEEPL_API_KEY")
@@ -26,12 +29,28 @@ class DeepLTranslator:
         if not self.api_key.endswith(":fx"):
              self.base_url = "https://api.deepl.com/v2"
 
+        # Initialize session with retry strategy
+        self.session = requests.Session()
+        retry_strategy = Retry(
+            total=3,  # Total number of retries
+            backoff_factor=1,  # Wait 1s, 2s, 4s between retries
+            status_forcelist=[429, 500, 502, 503, 504],  # Retry on these errors
+            allowed_methods=["HEAD", "GET", "OPTIONS", "POST"]  # Retry on these methods
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+        
+        # Standard timeout (connect, read)
+        self.timeout = (10, 30)
+
     def validate_api_key(self):
         """Checks if the API key is valid by querying usage."""
         try:
-            response = requests.get(
+            response = self.session.get(
                 f"{self.base_url}/usage",
-                headers={"Authorization": f"DeepL-Auth-Key {self.api_key}"}
+                headers={"Authorization": f"DeepL-Auth-Key {self.api_key}"},
+                timeout=self.timeout
             )
             response.raise_for_status()
             return True, response.json()
@@ -41,13 +60,14 @@ class DeepLTranslator:
     def translate_text_content(self, text, target_lang):
         """Translates a simple string or list of strings."""
         try:
-            response = requests.post(
+            response = self.session.post(
                 f"{self.base_url}/translate",
                 headers={"Authorization": f"DeepL-Auth-Key {self.api_key}"},
                 data={
                     "text": text,
                     "target_lang": target_lang
-                }
+                },
+                timeout=self.timeout
             )
             response.raise_for_status()
             result = response.json()
@@ -100,11 +120,12 @@ class DeepLTranslator:
         
         # 1. Upload
         with open(filepath, "rb") as f:
-            response = requests.post(
+            response = self.session.post(
                 f"{self.base_url}/document",
                 headers={"Authorization": f"DeepL-Auth-Key {self.api_key}"},
                 data={"target_lang": target_lang},
-                files={"file": f}
+                files={"file": f},
+                timeout=self.timeout
             )
         
         response.raise_for_status()
@@ -114,10 +135,11 @@ class DeepLTranslator:
         
         # 2. Check Status
         while True:
-            status_response = requests.post(
+            status_response = self.session.post(
                 f"{self.base_url}/document/{doc_id}",
                 headers={"Authorization": f"DeepL-Auth-Key {self.api_key}"},
-                data={"document_key": doc_key}
+                data={"document_key": doc_key},
+                timeout=self.timeout
             )
             status_response.raise_for_status()
             status_data = status_response.json()
@@ -134,11 +156,12 @@ class DeepLTranslator:
             time.sleep(min(seconds, 5)) # Sleep at least a bit, but max 5s to be responsive
             
         # 3. Download
-        download_response = requests.post(
+        download_response = self.session.post(
             f"{self.base_url}/document/{doc_id}/result",
             headers={"Authorization": f"DeepL-Auth-Key {self.api_key}"},
             data={"document_key": doc_key},
-            stream=True
+            stream=True,
+            timeout=(10, 300) # Longer timeout for download
         )
         download_response.raise_for_status()
         
